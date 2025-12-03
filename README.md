@@ -1,1 +1,1 @@
-# GFED MDS Backend Monorepo
+# GFED Medusa Backend Monorepo

@@ -1,5 +1,5 @@
 {
-  "name": "gfed-mds-backend",
+  "name": "gfed-medusa-backend",
   "private": true,
   "scripts": {
     "build": "turbo run build",
