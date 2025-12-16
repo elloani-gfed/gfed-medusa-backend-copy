@@ -28,6 +28,8 @@ CMD ["pnpm", "--filter", "medusa", "dev"]
 
 FROM deps AS builder
 
+ENV CI=true
+
 COPY . .
 
 RUN pnpm install --frozen-lockfile
