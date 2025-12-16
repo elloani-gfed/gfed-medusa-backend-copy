@@ -34,13 +34,11 @@ COPY . .
 
 RUN pnpm install --frozen-lockfile
 RUN pnpm --filter medusa run build
-RUN pnpm prune --prod
 
 FROM base AS runner
 
 ENV NODE_ENV=production \
-    PORT=9000 \
-    MEDUSA_CONFIG_FILE=/app/apps/medusa/.medusa/server/medusa-config.js
+    PORT=9000
 
 WORKDIR /app
 
