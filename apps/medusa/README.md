@@ -91,3 +91,13 @@ pnpm run db:seed:stock
 - Required runtime env vars: `DATABASE_URL`, `STORE_CORS`, `ADMIN_CORS`, `AUTH_CORS`, `JWT_SECRET`, `COOKIE_SECRET`, `MEDUSA_BACKEND_URL`, `VITE_MEDUSA_BACKEND_URL`, and `PORT` (Render sets `PORT` automatically). Optional: `REDIS_URL` (enable if you add Redis), Algolia, and Shopify settings.
 - Example local run against an external Postgres: `docker run --env-file apps/medusa/.env.docker -p 9000:9000 medusa-app` (add `REDIS_URL` if you enable Redis).
 - Render: create a Web Service using Docker, set `Dockerfile Path` to `apps/medusa/Dockerfile` and `Context` to the repo root, attach Render Postgres URL (v18) to `DATABASE_URL`, and keep `PORT` set to Render's provided value. Add Redis later by setting `REDIS_URL` to your Render Redis URL. The default container command already runs migrations before `pnpm run start:prod`.
+
+## CI/CD
+
+- **PR checks** (`.github/workflows/ci-medusa.yml`): Runs on pull requests (and pushes to `main`) that touch Medusa-related files. Steps: install with pnpm (Node 20), `pnpm --filter medusa lint`, `pnpm --filter medusa test:unit`, and `pnpm --filter medusa build`.
+- **Deploy pipeline** (`.github/workflows/deploy-medusa.yml`): Runs on push to `main`. Jobs: build (lint/test/build with Postgres 18 service) → deploy to smoke (auto) → deploy to QA (manual via environment gate) → deploy to production (manual via environment gate). Each deploy uses `render-deploy.yml` to hit the appropriate Render deploy hook with guardrails and logging.
+- **Reusable deploy helper** (`.github/workflows/render-deploy.yml`): Minimal workflow called from deploy jobs; posts to a provided Render deploy hook after verifying the secret exists.
+- **Required secrets** (set as environment-scoped secrets where possible):
+  - Smoke: `RENDER_SMOKE_DEPLOY_HOOK`
+  - QA: `RENDER_QA_DEPLOY_HOOK`
+  - Production: `RENDER_PROD_DEPLOY_HOOK`
