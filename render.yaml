@@ -47,3 +47,20 @@ projects:
                 fromDatabase:
                   name: gfed-medusa-database
                   property: connectionString
+
+      - name: smoke
+        services:
+          - type: web
+            runtime: image
+            plan: free
+            name: gfed-medusa-backend-smoke
+            region: singapore
+            autoDeployTrigger: off
+            image:
+              url: traefik/whoami:v1.11
+            envVars:
+              - fromGroup: backend-env-group-smoke
+              - key: DATABASE_URL
+                fromDatabase:
+                  name: gfed-medusa-database
+                  property: connectionString
