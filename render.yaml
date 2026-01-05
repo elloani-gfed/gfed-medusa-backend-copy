@@ -1,25 +1,58 @@
-# NOTE: The env groups should be first created in the Render dashboard
-# Since they do not allow `sync: false` in env groups, this is seems to be the only way
-
+# Exported from Render on 2026-01-05T12:28:24Z
+version: '1'
 projects:
   - name: GFED Medusa Backend and DB
     environments:
-      - name: production
+      - name: Production
         services:
           - type: web
-            runtime: image
+            name: gfed-medusa-backend
+            runtime: docker
+            repo: https://github.com/goodfrontend/gfed-medusa-backend
             plan: free
-            name: gfed-medusa-backend-prod
-            region: singapore
-            autoDeployTrigger: off
-            image:
-              url: traefik/whoami:v1.11
             envVars:
-              - fromGroup: backend-env-group-prod
+              - key: VITE_MEDUSA_BACKEND_URL
+                sync: false
+              - key: STORE_CORS
+                sync: false
+              - key: SHOPIFY_BASE_URL
+                sync: false
+              - key: POSTGRES_URL
+                fromDatabase:
+                  name: gfed-medusa-database
+                  property: connectionString
+              - key: PORT
+                sync: false
+              - key: MEDUSA_WORKER_MODE
+                sync: false
+              - key: MEDUSA_BACKEND_URL
+                sync: false
+              - key: ALGOLIA_PRODUCT_INDEX_NAME
+                sync: false
+              - key: COOKIE_SECRET
+                sync: false
+              - key: AUTH_CORS
+                sync: false
+              - key: ALGOLIA_APP_ID
+                sync: false
+              - key: ADMIN_CORS
+                sync: false
+              - key: JWT_SECRET
+                sync: false
+              - key: DISABLE_MEDUSA_ADMIN
+                sync: false
+              - key: DB_NAME
+                sync: false
               - key: DATABASE_URL
                 fromDatabase:
                   name: gfed-medusa-database
                   property: connectionString
+              - key: ALGOLIA_API_KEY
+                sync: false
+            region: singapore
+            dockerContext: .
+            dockerfilePath: apps/medusa/Dockerfile
+            autoDeployTrigger: 'off'
         databases:
           - name: gfed-medusa-database
             databaseName: gfed_medusa_database
@@ -30,22 +63,3 @@ projects:
               - source: 0.0.0.0/0
                 description: everywhere
             postgresMajorVersion: '18'
-
-      - name: qa
-        services:
-          - type: web
-            runtime: image
-            plan: free
-            name: gfed-medusa-backend-qa
-            region: singapore
-            autoDeployTrigger: off
-            image:
-              url: traefik/whoami:v1.11
-            envVars:
-              - fromGroup: backend-env-group-qa
-              - key: DATABASE_URL
-                fromDatabase:
-                  name: gfed-medusa-database
-                  property: connectionString
-
-      - name: smoke
