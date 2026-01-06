@@ -26,7 +26,7 @@ jobs:
 
   deploy-qa:
     name: Deploy to QA
-    needs: deploy-smoke
+    needs: build
     uses: ./.github/workflows/_deploy-render.yml
     with:
       environment_name: qa
