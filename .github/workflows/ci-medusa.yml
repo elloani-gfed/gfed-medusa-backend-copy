@@ -1,0 +1,62 @@
+name: CI - Medusa
+
+on:
+  pull_request:
+    paths:
+      - "apps/medusa/**"
+      - "packages/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "turbo.json"
+      - ".github/workflows/medusa-*.yml"
+  push:
+    branches: ["main"]
+    paths:
+      - "apps/medusa/**"
+      - "packages/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "turbo.json"
+      - ".github/workflows/medusa-*.yml"
+
+concurrency:
+  group: medusa-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Verify medusa app
+    runs-on: ubuntu-latest
+    env:
+      CI: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.18.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint medusa app
+        run: pnpm --filter medusa lint
+
+      - name: Unit tests
+        run: pnpm --filter medusa test:unit
+
+      - name: Build medusa app
+        run: pnpm --filter medusa build

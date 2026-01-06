@@ -1,0 +1,62 @@
+name: Deploy to Render
+
+on:
+  workflow_call:
+    inputs:
+      environment_name:
+        required: true
+        type: string
+      deploy_label:
+        required: true
+        type: string
+      service_name:
+        required: true
+        type: string
+      image:
+        required: true
+        type: string
+    secrets:
+      RENDER_API_KEY:
+        required: true
+
+jobs:
+  deploy:
+    name: Deploy to ${{ inputs.deploy_label }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment_name }}
+    steps:
+      - name: Trigger Render deployment
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          SERVICE_NAME: ${{ inputs.service_name }}
+          IMAGE: ${{ inputs.image }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${RENDER_API_KEY:-}" ]; then
+            echo "RENDER_API_KEY is missing." >&2
+            exit 1
+          fi
+          if [ -z "${SERVICE_NAME:-}" ]; then
+            echo "SERVICE_NAME (Render service name) is missing." >&2
+            exit 1
+          fi
+          if [ -z "${IMAGE:-}" ]; then
+            echo "IMAGE (container image tag) is missing." >&2
+            exit 1
+          fi
+
+          payload=$(printf '{"serviceDetails":{"image":{"url":"%s"}}}' "$IMAGE")
+          base_url="https://api.render.com/v1/services/${SERVICE_NAME}"
+
+          echo "Updating Render service ${SERVICE_NAME} to image ${IMAGE}."
+          curl -fsS -X PATCH \
+            -H "Authorization: Bearer ${RENDER_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "$payload" \
+            "${base_url}"
+
+          echo "Triggering deploy for service ${SERVICE_NAME}."
+          curl -fsS -X POST \
+            -H "Authorization: Bearer ${RENDER_API_KEY}" \
+            "${base_url}/deploys"
