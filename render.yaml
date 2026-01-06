@@ -6,5 +6,3 @@ projects:
       - name: production
 
       - name: qa
-
-      - name: smoke
