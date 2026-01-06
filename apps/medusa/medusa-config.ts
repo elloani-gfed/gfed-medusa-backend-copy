@@ -1,5 +1,10 @@
 import { defineConfig, loadEnv } from '@medusajs/framework/utils';
 
+const toBool = (val?: string, fallback = false) => {
+  if (val === undefined) return fallback;
+  return ['1', 'true', 'yes', 'on'].includes(val.toLowerCase());
+};
+
 loadEnv(process.env.NODE_ENV || 'development', process.cwd());
 
 module.exports = defineConfig({
@@ -17,8 +22,8 @@ module.exports = defineConfig({
       cookieSecret: process.env.COOKIE_SECRET || 'supersecret',
     },
     databaseDriverOptions: {
-      ssl: false,
-      sslmode: 'disable',
+      ssl: toBool(process.env.DATABASE_SSL, false),
+      sslmode: toBool(process.env.DATABASE_SSL, false) ? 'require' : 'disable',
     },
   },
   admin: {
