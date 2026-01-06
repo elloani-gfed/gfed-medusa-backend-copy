@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DATABASE_URL: ${{ secrets.database_url }}
-      DATABASE_SSL: ${{ secrets.database_ssl || 'false' }}
+      DATABASE_SSL: ${{ secrets.database_ssl || '' }}
     permissions:
       contents: read
       packages: write

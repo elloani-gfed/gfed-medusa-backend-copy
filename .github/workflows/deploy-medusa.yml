@@ -26,7 +26,7 @@ jobs:
       dockerfile: ./apps/medusa/Dockerfile
     secrets:
       database_url: ${{ secrets.DATABASE_URL }}
-      database_ssl: ${{ secrets.DATABASE_SSL || 'false' }}
+      database_ssl: ${{ secrets.DATABASE_SSL || '' }}
 
   deploy-qa:
     name: Deploy to QA

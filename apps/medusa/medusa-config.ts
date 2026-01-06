@@ -4,12 +4,15 @@ const toBool = (val?: string, fallback = false) => {
   if (val === undefined) return fallback;
   return ['1', 'true', 'yes', 'on'].includes(val.toLowerCase());
 };
+const databaseUrl = process.env.DATABASE_URL || '';
+const sslFromUrl = databaseUrl.toLowerCase().includes('sslmode=require');
+const dbSslEnabled = toBool(process.env.DATABASE_SSL, sslFromUrl);
 
 loadEnv(process.env.NODE_ENV || 'development', process.cwd());
 
 module.exports = defineConfig({
   projectConfig: {
-    databaseUrl: process.env.DATABASE_URL,
+    databaseUrl,
     workerMode: process.env.MEDUSA_WORKER_MODE as
       | 'shared'
       | 'worker'
@@ -22,8 +25,8 @@ module.exports = defineConfig({
       cookieSecret: process.env.COOKIE_SECRET || 'supersecret',
     },
     databaseDriverOptions: {
-      ssl: toBool(process.env.DATABASE_SSL, false),
-      sslmode: toBool(process.env.DATABASE_SSL, false) ? 'require' : 'disable',
+      ssl: dbSslEnabled,
+      sslmode: dbSslEnabled ? 'require' : 'disable',
     },
   },
   admin: {
