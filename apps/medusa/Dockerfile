@@ -29,6 +29,8 @@ CMD ["pnpm", "--filter", "medusa", "dev"]
 FROM deps AS builder
 
 ENV CI=true
+ARG DATABASE_URL
+ENV DATABASE_URL=${DATABASE_URL}
 
 COPY . .
 

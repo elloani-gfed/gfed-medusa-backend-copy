@@ -24,6 +24,8 @@ jobs:
     with:
       app: medusa
       dockerfile: ./apps/medusa/Dockerfile
+    secrets:
+      database_url: ${{ secrets.DATABASE_URL }}
 
   deploy-qa:
     name: Deploy to QA
