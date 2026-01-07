@@ -8,11 +8,6 @@ on:
       dockerfile:
         required: true
         type: string
-    secrets:
-      database_url:
-        required: true
-      database_ssl:
-        required: false
     outputs:
       image_tag:
         value: ghcr.io/${{ github.repository }}/${{ inputs.app }}:${{ github.sha }}
@@ -20,9 +15,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      DATABASE_URL: ${{ secrets.database_url }}
-      DATABASE_SSL: ${{ secrets.database_ssl || '' }}
     permissions:
       contents: read
       packages: write
@@ -41,9 +33,6 @@ jobs:
           file: ${{ inputs.dockerfile }}
           push: true
           tags: ghcr.io/${{ github.repository }}/${{ inputs.app }}:${{ github.sha }}
-          build-args: |
-            DATABASE_URL=${{ env.DATABASE_URL }}
-            DATABASE_SSL=${{ env.DATABASE_SSL }}
           network: host
           cache-from: type=gha
           cache-to: type=gha,mode=max

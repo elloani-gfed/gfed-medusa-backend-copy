@@ -29,10 +29,6 @@ CMD ["pnpm", "--filter", "medusa", "dev"]
 FROM deps AS builder
 
 ENV CI=true
-ARG DATABASE_URL
-ARG DATABASE_SSL
-ENV DATABASE_URL=${DATABASE_URL}
-ENV DATABASE_SSL=${DATABASE_SSL}
 
 COPY . .
 
