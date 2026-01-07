@@ -42,7 +42,7 @@ jobs:
 
   deploy-prod:
     name: Deploy to Production
-    needs: deploy-qa
+    needs: [build, deploy-qa]
     uses: ./.github/workflows/_deploy-render.yml
     with:
       environment_name: production
