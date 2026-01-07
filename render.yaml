@@ -22,6 +22,6 @@ projects:
             region: singapore
             autoDeployTrigger: off
             image:
-              url: traefik/whoami:v1.11
+              url: ghcr.io/elloani-gfed/gfed-medusa-backend-copy/medusa:latest
             envVars:
               - fromGroup: backend-env-group-qa
