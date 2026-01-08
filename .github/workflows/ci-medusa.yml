@@ -68,6 +68,7 @@ jobs:
     if: github.event.pull_request.head.repo.full_name == github.repository
     needs: build-preview-image
     runs-on: ubuntu-latest
+    environment: qa
     permissions:
       contents: read
     steps:
