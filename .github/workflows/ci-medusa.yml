@@ -67,15 +67,10 @@ jobs:
     name: Render image preview
     if: github.event.pull_request.head.repo.full_name == github.repository
     needs: build-preview-image
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Create Render service preview
-        uses: fjogeleit/http-request-action@v1
-        with:
-          url: https://api.render.com/v1/services/${{ secrets.RENDER_SERVICE_ID }}/preview
-          method: POST
-          bearerToken: ${{ secrets.RENDER_API_KEY }}
-          contentType: application/json
-          data: '{"imagePath":"${{ needs.build-preview-image.outputs.image_tag }}"}'
+    uses: ./.github/workflows/_deploy-render-preview.yaml
+    with:
+      environment_name: qa
+      image: ${{ needs.build-preview-image.outputs.image_tag }}
+    secrets:
+      RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+      RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
