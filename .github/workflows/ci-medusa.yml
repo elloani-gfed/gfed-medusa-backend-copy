@@ -99,11 +99,22 @@ jobs:
             exit 1
           fi
 
-          preview_id=$(echo "$create_body" | jq -r '.id // .preview.id // empty')
-          preview_url=$(echo "$create_body" | jq -r '.url // .preview.url // .previewUrl // .service.previewUrl // .service.serviceDetails.url // empty')
+          preview_service_id=$(echo "$create_body" | jq -r '.service.id // empty')
+          deploy_id=$(echo "$create_body" | jq -r '.deployId // empty')
+          preview_url=$(echo "$create_body" | jq -r '.service.serviceDetails.url // .service.url // empty')
 
-          if [ -z "$preview_id" ]; then
-            echo "::warning::Preview id missing from response; falling back to service preview endpoint."
+          if [ -z "$preview_service_id" ]; then
+            echo "::error::Preview service id missing from response: $create_body"
+            exit 1
+          fi
+
+          if [ -z "$deploy_id" ]; then
+            echo "::error::Deploy id missing from response: $create_body"
+            exit 1
+          fi
+
+          if [ -z "$preview_url" ]; then
+            echo "::warning::Preview URL missing from response; will retry later."
           fi
 
           max_attempts=30
@@ -111,50 +122,23 @@ jobs:
           attempts=1
 
           while [ "$attempts" -le "$max_attempts" ]; do
-            if [ -n "$preview_id" ]; then
-              status_resp=$(
-                curl -s -w "\n%{http_code}" "https://api.render.com/v1/services/$RENDER_SERVICE_ID/preview/$preview_id" \
-                  -H "Authorization: Bearer $RENDER_API_KEY" \
-                  -H "Accept: application/json" \
-                  --max-time 60 \
-                  --retry 3 \
-                  --retry-delay 5
-              )
-              status_body=$(echo "$status_resp" | head -n -1)
-              status_code=$(echo "$status_resp" | tail -n 1)
-
-              if [ "$status_code" -ge 300 ]; then
-                status_resp=$(
-                  curl -s -w "\n%{http_code}" "https://api.render.com/v1/services/$RENDER_SERVICE_ID/preview" \
-                    -H "Authorization: Bearer $RENDER_API_KEY" \
-                    -H "Accept: application/json" \
-                    --max-time 60 \
-                    --retry 3 \
-                    --retry-delay 5
-                )
-                status_body=$(echo "$status_resp" | head -n -1)
-                status_code=$(echo "$status_resp" | tail -n 1)
-              fi
-            else
-              status_resp=$(
-                curl -s -w "\n%{http_code}" "https://api.render.com/v1/services/$RENDER_SERVICE_ID/preview" \
-                  -H "Authorization: Bearer $RENDER_API_KEY" \
-                  -H "Accept: application/json" \
-                  --max-time 60 \
-                  --retry 3 \
-                  --retry-delay 5
-              )
-              status_body=$(echo "$status_resp" | head -n -1)
-              status_code=$(echo "$status_resp" | tail -n 1)
-            fi
+            status_resp=$(
+              curl -s -w "\n%{http_code}" "https://api.render.com/v1/services/$preview_service_id/deploys/$deploy_id" \
+                -H "Authorization: Bearer $RENDER_API_KEY" \
+                -H "Accept: application/json" \
+                --max-time 60 \
+                --retry 3 \
+                --retry-delay 5
+            )
+            status_body=$(echo "$status_resp" | head -n -1)
+            status_code=$(echo "$status_resp" | tail -n 1)
 
             if [ "$status_code" -ge 300 ]; then
               echo "::error::Preview status lookup failed ($status_code): $status_body"
               exit 1
             fi
 
-            preview_status=$(echo "$status_body" | jq -r '.status // .preview.status // .[0].status // empty')
-            preview_url=$(echo "$status_body" | jq -r '.url // .preview.url // .previewUrl // .service.previewUrl // .service.serviceDetails.url // .[0].url // .[0].previewUrl // empty')
+            preview_status=$(echo "$status_body" | jq -r '.status // empty')
 
             if [ -z "$preview_status" ]; then
               echo "::warning::Preview status missing in response: $status_body"
