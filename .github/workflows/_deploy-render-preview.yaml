@@ -17,7 +17,7 @@ on:
 
 jobs:
   render-preview:
-    name: Deploy to {{ inputs.environment_name }} preview
+    name: Deploy to ${{ inputs.environment_name }} preview
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment_name }}
     permissions:
