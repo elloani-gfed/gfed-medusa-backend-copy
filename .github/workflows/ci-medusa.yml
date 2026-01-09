@@ -100,7 +100,7 @@ jobs:
           fi
 
           preview_id=$(echo "$create_body" | jq -r '.id // .preview.id // empty')
-          preview_url=$(echo "$create_body" | jq -r '.url // .preview.url // .previewUrl // .service.previewUrl // empty')
+          preview_url=$(echo "$create_body" | jq -r '.url // .preview.url // .previewUrl // .service.previewUrl // .service.serviceDetails.url // empty')
 
           if [ -z "$preview_id" ]; then
             echo "::warning::Preview id missing from response; falling back to service preview endpoint."
@@ -154,7 +154,7 @@ jobs:
             fi
 
             preview_status=$(echo "$status_body" | jq -r '.status // .preview.status // .[0].status // empty')
-            preview_url=$(echo "$status_body" | jq -r '.url // .preview.url // .previewUrl // .service.previewUrl // .[0].url // .[0].previewUrl // empty')
+            preview_url=$(echo "$status_body" | jq -r '.url // .preview.url // .previewUrl // .service.previewUrl // .service.serviceDetails.url // .[0].url // .[0].previewUrl // empty')
 
             if [ -z "$preview_status" ]; then
               echo "::warning::Preview status missing in response: $status_body"
