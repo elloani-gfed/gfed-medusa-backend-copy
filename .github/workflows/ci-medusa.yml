@@ -115,5 +115,5 @@ jobs:
         if: steps.write-preview.outputs.has_preview == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: render-preview-metadata
+          name: render-preview-metadata-pr-${{ github.event.pull_request.number }}
           path: render-preview.json
