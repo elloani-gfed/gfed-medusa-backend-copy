@@ -9,7 +9,7 @@ on:
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
       - "turbo.json"
-      - ".github/workflows/medusa-*.yml"
+      - ".github/workflows/**"
 
 concurrency:
   group: medusa-pr-${{ github.event.pull_request.number }}
@@ -74,3 +74,85 @@ jobs:
     secrets:
       RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
       RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+
+  record-preview:
+    name: Record preview metadata
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    needs: render-preview
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Upsert preview comment
+        uses: actions/github-script@v7
+        env:
+          PREVIEW_URL: ${{ needs.render-preview.outputs.preview_url }}
+          PREVIEW_SERVICE_ID: ${{ needs.render-preview.outputs.preview_service_id }}
+        with:
+          script: |
+            const previewUrl = process.env.PREVIEW_URL;
+            const previewServiceId = process.env.PREVIEW_SERVICE_ID;
+
+            if (!previewServiceId) {
+              core.warning("Preview service id missing; skipping comment update.");
+              return;
+            }
+
+            const markerPrefix = "render-preview-service-id:";
+            const { owner, repo } = context.repo;
+            const issueNumber = context.payload.pull_request.number;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner,
+              repo,
+              issue_number: issueNumber,
+              per_page: 100,
+            });
+
+            const existing = comments.find((comment) =>
+              comment.body && comment.body.includes(markerPrefix)
+            );
+
+            const extractIds = (body) => {
+              const ids = new Set();
+              if (!body) {
+                return ids;
+              }
+              for (const match of body.matchAll(/render-preview-service-id:([A-Za-z0-9-]+)/g)) {
+                ids.add(match[1]);
+              }
+              return ids;
+            };
+
+            const existingIds = existing ? extractIds(existing.body) : new Set();
+            existingIds.add(previewServiceId);
+
+            const markerLines = Array.from(existingIds).map(
+              (id) => `<!-- ${markerPrefix}${id} -->`
+            );
+            const bodyLines = [
+              "Render preview:",
+              "",
+              previewUrl ? `URL: ${previewUrl}` : "URL: pending",
+              "",
+              ...markerLines,
+            ];
+            const body = bodyLines.join("\n");
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+                body,
+              });
+              core.notice("Updated preview metadata comment.");
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: issueNumber,
+                body,
+              });
+              core.notice("Created preview metadata comment.");
+            }

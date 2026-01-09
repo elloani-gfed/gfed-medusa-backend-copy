@@ -1,0 +1,96 @@
+name: Cleanup Render Preview
+
+on:
+  pull_request:
+    types: [closed]
+    paths:
+      - "apps/medusa/**"
+      - "packages/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "turbo.json"
+      - ".github/workflows/**"
+
+jobs:
+  cleanup:
+    name: Delete Render preview
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      issues: read
+    steps:
+      - name: Locate preview service id
+        id: lookup
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const markerPrefix = "render-preview-service-id:";
+            const { owner, repo } = context.repo;
+            const issueNumber = context.payload.pull_request.number;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner,
+              repo,
+              issue_number: issueNumber,
+              per_page: 100,
+            });
+
+            const matchComment = comments.find((comment) =>
+              comment.body && comment.body.includes(markerPrefix)
+            );
+
+            if (!matchComment) {
+              core.notice("No preview metadata comment found; skipping cleanup.");
+              return;
+            }
+
+            const matches = Array.from(
+              matchComment.body.matchAll(/render-preview-service-id:([A-Za-z0-9-]+)/g)
+            );
+            const ids = [...new Set(matches.map((match) => match[1]))];
+
+            if (ids.length === 0) {
+              core.warning("Preview metadata comment missing service ids; skipping cleanup.");
+              return;
+            }
+
+            core.setOutput("service_ids", ids.join(","));
+
+      - name: Delete Render preview service
+        if: steps.lookup.outputs.service_ids != ''
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          SERVICE_IDS: ${{ steps.lookup.outputs.service_ids }}
+        run: |
+          set -euo pipefail
+
+          IFS=',' read -r -a ids <<< "$SERVICE_IDS"
+
+          for service_id in "${ids[@]}"; do
+            if [ -z "$service_id" ]; then
+              continue
+            fi
+
+            delete_resp=$(curl -s -w "\n%{http_code}" -X DELETE "https://api.render.com/v1/services/$service_id" \
+              -H "Authorization: Bearer $RENDER_API_KEY" \
+              -H "Accept: application/json" \
+              --max-time 60 \
+              --retry 3 \
+              --retry-delay 5)
+
+            delete_body=$(echo "$delete_resp" | head -n -1)
+            delete_status=$(echo "$delete_resp" | tail -n 1)
+
+            if [ "$delete_status" -eq 404 ]; then
+              echo "Preview service $service_id already deleted."
+              continue
+            fi
+
+            if [ "$delete_status" -ge 300 ]; then
+              echo "::error::Failed to delete preview $service_id ($delete_status): $delete_body"
+              exit 1
+            fi
+
+            echo "Preview service $service_id deleted."
+          done
