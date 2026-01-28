@@ -40,17 +40,14 @@ FROM base AS runner
 ENV NODE_ENV=production \
     PORT=9000
 
-RUN npm install -g @infisical/cli
-
 WORKDIR /app/apps/medusa/.medusa/server
 
 COPY --from=builder /app /app
 
-RUN chmod +x /app/apps/medusa/entrypoint.prod.sh
 RUN chown -R node:node /app
 
 USER node
 
 EXPOSE 9000
 
-CMD ["sh", "/app/apps/medusa/entrypoint.prod.sh"]
+CMD ["sh", "-c", "pnpm run predeploy && pnpm run start:prod"]
