@@ -22,6 +22,8 @@ RUN pnpm install --frozen-lockfile
 
 FROM deps AS dev
 
+RUN npm install -g @infisical/cli
+
 COPY . .
 
 CMD ["pnpm", "--filter", "medusa", "dev"]
