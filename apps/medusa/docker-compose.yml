@@ -9,6 +9,7 @@ services:
       INFISICAL_TOKEN: ${INFISICAL_TOKEN_MEDUSA:-}
       INFISICAL_PROJECT_ID: ${INFISICAL_PROJECT_ID_MEDUSA:-}
       INFISICAL_ENV: ${INFISICAL_ENV_MEDUSA:-}
+      INFISICAL_PATH: ${INFISICAL_PATH_MEDUSA:-}
     working_dir: /app/apps/medusa
     command: >
       sh -c "chmod +x ./start.sh && ./start.sh"

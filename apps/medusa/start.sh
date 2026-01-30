@@ -18,6 +18,9 @@ if [ -n "${INFISICAL_TOKEN:-}" ] && [ -z "${INFISICAL_WRAPPED:-}" ]; then
   if [ -n "${INFISICAL_ENV:-}" ]; then
     set -- "$@" --env "$INFISICAL_ENV"
   fi
+  if [ -n "${INFISICAL_PATH:-}" ]; then
+    set -- "$@" --path "$INFISICAL_PATH"
+  fi
 
   exec "$@" --command "chmod +x ./start.sh && ./start.sh"
 fi
