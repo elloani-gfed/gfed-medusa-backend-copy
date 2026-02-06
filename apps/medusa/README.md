@@ -79,8 +79,26 @@ pnpm run db:seed:stock
 
 ## Docker (local dev)
 
-- Copy `.env.template` to `.env.docker` and fill in values. Defaults target the compose Postgres service (`postgres://medusa_user:medusa_password@postgres:5432/medusa`); change the host to `host.docker.internal` if you ever want to point at a host DB instead. Redis is optional—leave `REDIS_URL` commented out if you don't need it.
-- Start the stack from the root with `pnpm --filter medusa docker:up` (or from `apps/medusa` with `pnpm docker:up`). The Medusa container runs `start.sh`, which publishes `medusa-plugin-shopify`, runs migrations (`medusa db:migrate`), then starts `pnpm run dev` with hot reload. Postgres 17 is provided automatically via compose. The DB is exposed on host port `5433` (container `5432`) to avoid clashing with a local Postgres—connect from your host via `localhost:5433` if needed. Enable Redis later with `--profile redis` and by setting `REDIS_URL` in `.env.docker`.
+Pre-requisite:
+
+- Install Docker Desktop application
+- Install [Infisical CLI](https://infisical.com/docs/cli/overview#npm) package globally
+
+Steps:
+
+- Login with Infisical: `infisical login`
+- Export the ff env variables in your shell:
+
+```
+export INFISICAL_TOKEN_MEDUSA=$(infisical login --method=universal-auth --client-id=<client-id> --client-secret=<client-secret> --silent --plain)
+export INFISICAL_PROJECT_ID_MEDUSA=<projet-id>
+export INFISICAL_ENV_MEDUSA=<env-name>
+export INFISICAL_PATH_MEDUSA=<path>
+```
+
+The `client-id` and `client-secret` can be found in the [Machine identity](https://infisical.com/docs/documentation/platform/identities/machine-identities) created in Infisical for your local devleopment. The other values for the other variables can also be found in Infisical Dashboard.
+
+- Start the stack from the root with `pnpm --filter medusa docker:up` (or from `apps/medusa` with `pnpm docker:up`). The Medusa container runs `start.sh`, which fetches secrets from Infisical and injects them in local process, publishes `medusa-plugin-shopify`, runs migrations (`medusa db:migrate`), then starts `pnpm run dev` with hot reload. Postgres 17 is provided automatically via compose. The DB is exposed on host port `5433` (container `5432`) to avoid clashing with a local Postgres—connect from your host via `localhost:5433` if needed. Enable Redis later with `--profile redis` and by setting `REDIS_URL` in `.env.docker`.
 - Seed manually if needed: `pnpm --filter medusa docker:seed` (runs `pnpm run seed` in the container). Do this only once to avoid duplicate data.
 - Create an admin user inside the running container if needed: `docker compose -f ./docker-compose.yml exec medusa npx medusa user -e you@example.com -p password`.
 - Stop the stack with `pnpm --filter medusa docker:down` (or `pnpm docker:down` from `apps/medusa`; add `-v` to drop the Postgres/Redis volumes).
