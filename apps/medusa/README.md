@@ -114,8 +114,10 @@ The `client-id` and `client-secret` can be found in the [Machine identity](https
 
 - **PR checks** (`.github/workflows/ci-medusa.yml`): Runs on pull requests (and pushes to `main`) that touch Medusa-related files. Steps: install with pnpm (Node 20), `pnpm --filter medusa lint`, `pnpm --filter medusa test:unit`, and `pnpm --filter medusa build`.
 - **Deploy pipeline** (`.github/workflows/deploy-medusa.yml`): Runs on push to `main`. Jobs: build (lint/test/build with Postgres 18 service) → deploy to smoke (auto) → deploy to QA (manual via environment gate) → deploy to production (manual via environment gate). Each deploy uses `render-deploy.yml` to hit the appropriate Render deploy hook with guardrails and logging.
+- **Render lifecycle automation** (`.github/workflows/manage-render-prod-service.yml`): Supports manual suspend/resume of `gfed-medusa-backend-prod` via `workflow_dispatch` and scheduled enforcement every hour. Scheduled policy uses `Asia/Singapore` timezone: weekends are suspended and weekdays are resumed automatically.
 - **Reusable deploy helper** (`.github/workflows/render-deploy.yml`): Minimal workflow called from deploy jobs; posts to a provided Render deploy hook after verifying the secret exists.
 - **Required secrets** (set as environment-scoped secrets where possible):
   - Smoke: `RENDER_SMOKE_DEPLOY_HOOK`
   - QA: `RENDER_QA_DEPLOY_HOOK`
   - Production: `RENDER_PROD_DEPLOY_HOOK`
+  - Production (lifecycle automation): `RENDER_API_KEY`

@@ -1,0 +1,187 @@
+name: Manage Render Production Service
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Action to apply to production service"
+        required: true
+        type: choice
+        default: auto
+        options:
+          - auto
+          - suspend
+          - resume
+  schedule:
+    # Enforce policy hourly: weekends suspended, weekdays resumed.
+    - cron: "5 * * * *"
+
+concurrency:
+  group: render-prod-service-lifecycle
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  RENDER_API_BASE_URL: https://api.render.com/v1
+  RENDER_PROD_SERVICE_NAME: gfed-medusa-backend-prod
+  SCHEDULE_TIMEZONE: Asia/Singapore
+
+jobs:
+  manage:
+    name: Suspend/Resume Render prod service
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Determine desired action
+        id: desired-action
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          MANUAL_ACTION: ${{ github.event.inputs.action }}
+          TIMEZONE: ${{ env.SCHEDULE_TIMEZONE }}
+        run: |
+          set -euo pipefail
+
+          manual_action="${MANUAL_ACTION:-}"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ -n "$manual_action" ] && [ "$manual_action" != "auto" ]; then
+            desired_action="$manual_action"
+            reason="manual trigger"
+          else
+            day_of_week=$(TZ="$TIMEZONE" date +%u)
+            local_timestamp=$(TZ="$TIMEZONE" date '+%Y-%m-%d %H:%M:%S %Z')
+
+            if [ "$day_of_week" -ge 6 ]; then
+              desired_action="suspend"
+              reason="scheduled weekend policy at $local_timestamp"
+            else
+              desired_action="resume"
+              reason="scheduled weekday policy at $local_timestamp"
+            fi
+          fi
+
+          echo "desired_action=$desired_action" >> "$GITHUB_OUTPUT"
+          echo "reason=$reason" >> "$GITHUB_OUTPUT"
+          echo "Action: $desired_action ($reason)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Resolve Render service ID
+        id: resolve-service
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          SERVICE_NAME: ${{ env.RENDER_PROD_SERVICE_NAME }}
+          BASE_URL: ${{ env.RENDER_API_BASE_URL }}
+        run: |
+          set -euo pipefail
+
+          list_resp=$(
+            curl -sS -w "\n%{http_code}" "$BASE_URL/services?name=$SERVICE_NAME&limit=1" \
+              -H "Authorization: Bearer $RENDER_API_KEY" \
+              -H "Accept: application/json"
+          )
+
+          list_body=$(echo "$list_resp" | head -n -1)
+          list_status=$(echo "$list_resp" | tail -n 1)
+
+          if [ "$list_status" -ge 300 ]; then
+            echo "::error::Failed to query services ($list_status): $list_body"
+            exit 1
+          fi
+
+          service_id=$(echo "$list_body" | jq -r '.[0].service.id // .[0].id // empty')
+
+          if [ -z "$service_id" ]; then
+            echo "::error::Service not found: $SERVICE_NAME"
+            exit 1
+          fi
+
+          echo "service_id=$service_id" >> "$GITHUB_OUTPUT"
+          echo "Service ID: $service_id" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Skip if service is already in desired state
+        id: state-check
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          BASE_URL: ${{ env.RENDER_API_BASE_URL }}
+          SERVICE_ID: ${{ steps.resolve-service.outputs.service_id }}
+          DESIRED_ACTION: ${{ steps.desired-action.outputs.desired_action }}
+        run: |
+          set -euo pipefail
+
+          service_resp=$(
+            curl -sS -w "\n%{http_code}" "$BASE_URL/services/$SERVICE_ID" \
+              -H "Authorization: Bearer $RENDER_API_KEY" \
+              -H "Accept: application/json"
+          )
+
+          service_body=$(echo "$service_resp" | head -n -1)
+          service_status=$(echo "$service_resp" | tail -n 1)
+
+          if [ "$service_status" -ge 300 ]; then
+            echo "::warning::Failed to inspect service state ($service_status): $service_body"
+            echo "should_call=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          is_suspended=$(echo "$service_body" | jq -r '.suspended // .service.suspended // "unknown"')
+          if [ "$is_suspended" != "true" ] && [ "$is_suspended" != "false" ]; then
+            service_state=$(echo "$service_body" | jq -r '(.status // .service.status // "") | ascii_downcase')
+            case "$service_state" in
+              suspended)
+                is_suspended="true"
+                ;;
+              live|running|active|ready)
+                is_suspended="false"
+                ;;
+              *)
+                is_suspended="unknown"
+                ;;
+            esac
+          fi
+
+          should_call="true"
+          if [ "$DESIRED_ACTION" = "suspend" ] && [ "$is_suspended" = "true" ]; then
+            should_call="false"
+          fi
+          if [ "$DESIRED_ACTION" = "resume" ] && [ "$is_suspended" = "false" ]; then
+            should_call="false"
+          fi
+
+          echo "should_call=$should_call" >> "$GITHUB_OUTPUT"
+
+          if [ "$should_call" = "false" ]; then
+            echo "Service already in desired state. Skipping API call." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Trigger Render suspend/resume action
+        if: steps.state-check.outputs.should_call == 'true'
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          BASE_URL: ${{ env.RENDER_API_BASE_URL }}
+          SERVICE_ID: ${{ steps.resolve-service.outputs.service_id }}
+          ACTION: ${{ steps.desired-action.outputs.desired_action }}
+          REASON: ${{ steps.desired-action.outputs.reason }}
+        run: |
+          set -euo pipefail
+
+          action_resp=$(
+            curl -sS -w "\n%{http_code}" -X POST "$BASE_URL/services/$SERVICE_ID/$ACTION" \
+              -H "Authorization: Bearer $RENDER_API_KEY" \
+              -H "Accept: application/json"
+          )
+
+          action_body=$(echo "$action_resp" | head -n -1)
+          action_status=$(echo "$action_resp" | tail -n 1)
+
+          if [ "$action_status" -ge 300 ]; then
+            action_message=$(echo "$action_body" | jq -r '.message // .error // empty' | tr '[:upper:]' '[:lower:]')
+            if echo "$action_message" | grep -q "already"; then
+              echo "::notice::Render reports service is already in the requested state."
+              echo "Render replied that service is already in the requested state." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+
+            echo "::error::Failed to $ACTION service ($action_status): $action_body"
+            exit 1
+          fi
+
+          echo "Successfully requested '$ACTION' for service $SERVICE_ID ($REASON)." >> "$GITHUB_STEP_SUMMARY"
