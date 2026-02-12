@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: "Action to apply to production service"
+        description: 'Action to apply to production service'
         required: true
         type: choice
         default: auto
@@ -13,8 +13,8 @@ on:
           - suspend
           - resume
   schedule:
-    # Enforce policy hourly: weekends suspended, weekdays resumed.
-    - cron: "5 * * * *"
+    # Enforce policy every 30 minutes: :00-:29 resumed, :30-:59 suspended.
+    - cron: '*/30 * * * *'
 
 concurrency:
   group: render-prod-service-lifecycle
@@ -32,7 +32,7 @@ jobs:
   manage:
     name: Suspend/Resume Render prod service
     runs-on: ubuntu-latest
-    environment: production
+    environment: production-ops
     steps:
       - name: Determine desired action
         id: desired-action
@@ -48,15 +48,16 @@ jobs:
             desired_action="$manual_action"
             reason="manual trigger"
           else
-            day_of_week=$(TZ="$TIMEZONE" date +%u)
+            minute_of_hour=$(TZ="$TIMEZONE" date +%M)
+            minute_num=$((10#$minute_of_hour))
             local_timestamp=$(TZ="$TIMEZONE" date '+%Y-%m-%d %H:%M:%S %Z')
 
-            if [ "$day_of_week" -ge 6 ]; then
-              desired_action="suspend"
-              reason="scheduled weekend policy at $local_timestamp"
-            else
+            if [ "$minute_num" -lt 30 ]; then
               desired_action="resume"
-              reason="scheduled weekday policy at $local_timestamp"
+              reason="scheduled half-hour policy (:00-:29 resumed) at $local_timestamp"
+            else
+              desired_action="suspend"
+              reason="scheduled half-hour policy (:30-:59 suspended) at $local_timestamp"
             fi
           fi
 
@@ -122,14 +123,15 @@ jobs:
             exit 0
           fi
 
-          is_suspended=$(echo "$service_body" | jq -r '.suspended // .service.suspended // "unknown"')
+          is_suspended=$(echo "$service_body" | jq -r '.suspended // .service.suspended // .serviceDetails.suspended // .service.serviceDetails.suspended // "unknown"')
+          service_state=$(echo "$service_body" | jq -r '(.status // .service.status // .serviceDetails.status // .service.serviceDetails.status // "") | ascii_downcase')
+
           if [ "$is_suspended" != "true" ] && [ "$is_suspended" != "false" ]; then
-            service_state=$(echo "$service_body" | jq -r '(.status // .service.status // "") | ascii_downcase')
             case "$service_state" in
-              suspended)
+              suspended|suspending|deactivated|paused)
                 is_suspended="true"
                 ;;
-              live|running|active|ready)
+              live|running|active|ready|resuming)
                 is_suspended="false"
                 ;;
               *)
@@ -149,7 +151,13 @@ jobs:
           echo "should_call=$should_call" >> "$GITHUB_OUTPUT"
 
           if [ "$should_call" = "false" ]; then
-            echo "Service already in desired state. Skipping API call." >> "$GITHUB_STEP_SUMMARY"
+            if [ "$DESIRED_ACTION" = "suspend" ]; then
+              echo "Service already suspended. Skipping suspend API call." >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "Service already running. Skipping resume API call." >> "$GITHUB_STEP_SUMMARY"
+            fi
+          else
+            echo "Service state check: suspended=$is_suspended status=$service_state" >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Trigger Render suspend/resume action
@@ -173,7 +181,7 @@ jobs:
           action_status=$(echo "$action_resp" | tail -n 1)
 
           if [ "$action_status" -ge 300 ]; then
-            action_message=$(echo "$action_body" | jq -r '.message // .error // empty' | tr '[:upper:]' '[:lower:]')
+            action_message=$(echo "$action_body" | jq -r '(.message // .error // .error.message // .details // empty) | tostring | ascii_downcase')
             if echo "$action_message" | grep -q "already"; then
               echo "::notice::Render reports service is already in the requested state."
               echo "Render replied that service is already in the requested state." >> "$GITHUB_STEP_SUMMARY"
