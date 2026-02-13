@@ -187,6 +187,11 @@ jobs:
               echo "Render replied that service is already in the requested state." >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
+            if [ "$ACTION" = "resume" ] && echo "$action_message" | grep -q "only services suspended by a user can be resumed"; then
+              echo "::notice::Render reports service is not user-suspended; resume API call is a no-op."
+              echo "Render replied that the service is not user-suspended; treating resume as a no-op." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
 
             echo "::error::Failed to $ACTION service ($action_status): $action_body"
             exit 1
