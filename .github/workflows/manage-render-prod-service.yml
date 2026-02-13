@@ -26,6 +26,7 @@ permissions:
 env:
   RENDER_API_BASE_URL: https://api.render.com/v1
   RENDER_PROD_SERVICE_NAME: gfed-medusa-backend-prod
+  RENDER_PROD_DATABASE_NAME: gfed-medusa-database
   SCHEDULE_TIMEZONE: Asia/Singapore
 
 jobs:
@@ -98,8 +99,41 @@ jobs:
           echo "service_id=$service_id" >> "$GITHUB_OUTPUT"
           echo "Service ID: $service_id" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Resolve Render Postgres ID
+        id: resolve-postgres
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          POSTGRES_NAME: ${{ env.RENDER_PROD_DATABASE_NAME }}
+          BASE_URL: ${{ env.RENDER_API_BASE_URL }}
+        run: |
+          set -euo pipefail
+
+          list_resp=$(
+            curl -sS -w "\n%{http_code}" "$BASE_URL/postgres?name=$POSTGRES_NAME&limit=1" \
+              -H "Authorization: Bearer $RENDER_API_KEY" \
+              -H "Accept: application/json"
+          )
+
+          list_body=$(echo "$list_resp" | head -n -1)
+          list_status=$(echo "$list_resp" | tail -n 1)
+
+          if [ "$list_status" -ge 300 ]; then
+            echo "::error::Failed to query Postgres instances ($list_status): $list_body"
+            exit 1
+          fi
+
+          postgres_id=$(echo "$list_body" | jq -r '.[0].postgres.id // .[0].id // empty')
+
+          if [ -z "$postgres_id" ]; then
+            echo "::error::Postgres instance not found: $POSTGRES_NAME"
+            exit 1
+          fi
+
+          echo "postgres_id=$postgres_id" >> "$GITHUB_OUTPUT"
+          echo "Postgres ID: $postgres_id" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Skip if service is already in desired state
-        id: state-check
+        id: service-state-check
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
           BASE_URL: ${{ env.RENDER_API_BASE_URL }}
@@ -160,8 +194,78 @@ jobs:
             echo "Service state check: suspended=$is_suspended status=$service_state" >> "$GITHUB_STEP_SUMMARY"
           fi
 
+      - name: Skip if Postgres is already in desired state
+        id: postgres-state-check
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          BASE_URL: ${{ env.RENDER_API_BASE_URL }}
+          POSTGRES_ID: ${{ steps.resolve-postgres.outputs.postgres_id }}
+          DESIRED_ACTION: ${{ steps.desired-action.outputs.desired_action }}
+        run: |
+          set -euo pipefail
+
+          postgres_resp=$(
+            curl -sS -w "\n%{http_code}" "$BASE_URL/postgres/$POSTGRES_ID" \
+              -H "Authorization: Bearer $RENDER_API_KEY" \
+              -H "Accept: application/json"
+          )
+
+          postgres_body=$(echo "$postgres_resp" | head -n -1)
+          postgres_status=$(echo "$postgres_resp" | tail -n 1)
+
+          if [ "$postgres_status" -ge 300 ]; then
+            echo "::warning::Failed to inspect Postgres state ($postgres_status): $postgres_body"
+            echo "should_call=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          postgres_suspended=$(echo "$postgres_body" | jq -r '.suspended // .postgres.suspended // "unknown"')
+          postgres_runtime_status=$(echo "$postgres_body" | jq -r '(.status // .postgres.status // "") | ascii_downcase')
+
+          case "$postgres_suspended" in
+            suspended|true)
+              is_suspended="true"
+              ;;
+            not_suspended|false)
+              is_suspended="false"
+              ;;
+            *)
+              case "$postgres_runtime_status" in
+                suspended|suspending|deactivated|paused)
+                  is_suspended="true"
+                  ;;
+                available|live|running|active|ready|resuming)
+                  is_suspended="false"
+                  ;;
+                *)
+                  is_suspended="unknown"
+                  ;;
+              esac
+              ;;
+          esac
+
+          should_call="true"
+          if [ "$DESIRED_ACTION" = "suspend" ] && [ "$is_suspended" = "true" ]; then
+            should_call="false"
+          fi
+          if [ "$DESIRED_ACTION" = "resume" ] && [ "$is_suspended" = "false" ]; then
+            should_call="false"
+          fi
+
+          echo "should_call=$should_call" >> "$GITHUB_OUTPUT"
+
+          if [ "$should_call" = "false" ]; then
+            if [ "$DESIRED_ACTION" = "suspend" ]; then
+              echo "Postgres already suspended. Skipping suspend API call." >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "Postgres already running. Skipping resume API call." >> "$GITHUB_STEP_SUMMARY"
+            fi
+          else
+            echo "Postgres state check: suspended=$is_suspended status=$postgres_runtime_status" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Trigger Render suspend/resume action
-        if: steps.state-check.outputs.should_call == 'true'
+        if: steps.service-state-check.outputs.should_call == 'true'
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
           BASE_URL: ${{ env.RENDER_API_BASE_URL }}
@@ -198,3 +302,37 @@ jobs:
           fi
 
           echo "Successfully requested '$ACTION' for service $SERVICE_ID ($REASON)." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Trigger Render Postgres suspend/resume action
+        if: steps.postgres-state-check.outputs.should_call == 'true'
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          BASE_URL: ${{ env.RENDER_API_BASE_URL }}
+          POSTGRES_ID: ${{ steps.resolve-postgres.outputs.postgres_id }}
+          ACTION: ${{ steps.desired-action.outputs.desired_action }}
+          REASON: ${{ steps.desired-action.outputs.reason }}
+        run: |
+          set -euo pipefail
+
+          action_resp=$(
+            curl -sS -w "\n%{http_code}" -X POST "$BASE_URL/postgres/$POSTGRES_ID/$ACTION" \
+              -H "Authorization: Bearer $RENDER_API_KEY" \
+              -H "Accept: application/json"
+          )
+
+          action_body=$(echo "$action_resp" | head -n -1)
+          action_status=$(echo "$action_resp" | tail -n 1)
+
+          if [ "$action_status" -ge 300 ]; then
+            action_message=$(echo "$action_body" | jq -r '(.message // .error // .error.message // .details // empty) | tostring | ascii_downcase')
+            if echo "$action_message" | grep -Eq "already|not suspended|not_suspended"; then
+              echo "::notice::Render Postgres reports database is already in the requested state."
+              echo "Render Postgres replied that database is already in the requested state." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+
+            echo "::error::Failed to $ACTION Postgres instance ($action_status): $action_body"
+            exit 1
+          fi
+
+          echo "Successfully requested '$ACTION' for Postgres $POSTGRES_ID ($REASON)." >> "$GITHUB_STEP_SUMMARY"
