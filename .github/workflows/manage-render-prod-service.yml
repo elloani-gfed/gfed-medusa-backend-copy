@@ -12,9 +12,9 @@ on:
           - auto
           - suspend
           - resume
-  schedule:
-    # Enforce policy every 30 minutes: :00-:29 resumed, :30-:59 suspended.
-    - cron: '*/30 * * * *'
+  # schedule:
+  #   # Enforce policy every 30 minutes: :00-:29 resumed, :30-:59 suspended.
+  #   - cron: '*/30 * * * *'
 
 concurrency:
   group: render-prod-service-lifecycle
