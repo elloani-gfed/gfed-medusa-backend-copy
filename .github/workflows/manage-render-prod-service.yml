@@ -97,28 +97,59 @@ jobs:
             TZ="$TIMEZONE" date -d "$1" +%s 2>/dev/null || true
           }
 
+          normalize_suspended_value() {
+            local raw normalized
+            raw="${1:-}"
+            normalized=$(echo "$raw" | tr '[:upper:]' '[:lower:]' | tr -d ' ')
+
+            case "$normalized" in
+              true|1|suspended|suspending|paused|deactivated|inactive)
+                echo "true"
+                ;;
+              false|0|not_suspended|running|active|live|ready|resuming|available)
+                echo "false"
+                ;;
+              *)
+                echo "unknown"
+                ;;
+            esac
+          }
+
           detect_suspended_state() {
             local body="$1"
-            local suspended status
+            local raw_suspended status suspended
 
-            suspended=$(echo "$body" | jq -r '.suspended // .service.suspended // .serviceDetails.suspended // .service.serviceDetails.suspended // "unknown"')
-            status=$(echo "$body" | jq -r '(.status // .service.status // .serviceDetails.status // .service.serviceDetails.status // "") | ascii_downcase')
+            raw_suspended=$(echo "$body" | jq -r '
+              .suspended //
+              .service.suspended //
+              .serviceDetails.suspended //
+              .service.serviceDetails.suspended //
+              .serviceDetails.suspendedState //
+              .service.serviceDetails.suspendedState //
+              .suspendState //
+              .service.suspendState //
+              empty
+            ')
+            status=$(echo "$body" | jq -r '
+              (
+                .status //
+                .service.status //
+                .serviceDetails.status //
+                .service.serviceDetails.status //
+                .serviceDetails.runtimeStatus //
+                .service.serviceDetails.runtimeStatus //
+                .runtimeStatus //
+                .service.runtimeStatus //
+                ""
+              ) | tostring | ascii_downcase
+            ')
 
-            if [ "$suspended" != "true" ] && [ "$suspended" != "false" ]; then
-              case "$status" in
-                suspended|suspending|deactivated|paused)
-                  suspended="true"
-                  ;;
-                live|running|active|ready|resuming)
-                  suspended="false"
-                  ;;
-                *)
-                  suspended="unknown"
-                  ;;
-              esac
+            suspended=$(normalize_suspended_value "$raw_suspended")
+            if [ "$suspended" = "unknown" ]; then
+              suspended=$(normalize_suspended_value "$status")
             fi
 
-            echo "$suspended|$status"
+            echo "$suspended|$status|$raw_suspended"
           }
 
           fetch_service_state() {
@@ -140,12 +171,9 @@ jobs:
 
             state_pair=$(detect_suspended_state "$body")
             LAST_SUSPENDED="${state_pair%%|*}"
-            LAST_STATUS="${state_pair#*|}"
-
-            if [ "$LAST_SUSPENDED" = "unknown" ]; then
-              echo "::error::Unable to safely determine service state. Raw status: '$LAST_STATUS'."
-              return 1
-            fi
+            state_pair="${state_pair#*|}"
+            LAST_STATUS="${state_pair%%|*}"
+            LAST_RAW_SUSPENDED="${state_pair#*|}"
           }
 
           trigger_action() {
@@ -238,15 +266,23 @@ jobs:
           fetch_service_state
           initial_suspended="$LAST_SUSPENDED"
           initial_status="$LAST_STATUS"
-          append_summary "State at window start: suspended=$initial_suspended status=$initial_status"
+          initial_raw_suspended="$LAST_RAW_SUSPENDED"
+          append_summary "State at window start: suspended=$initial_suspended status=$initial_status raw_suspended=$initial_raw_suspended"
+
+          if [ "$initial_suspended" = "unknown" ]; then
+            echo "::warning::Unable to conclusively parse start state. Continuing with API no-op checks."
+            append_summary "Start state could not be conclusively parsed. Proceeding with API no-op handling."
+          fi
 
           if [ "$ACTION" = "suspend" ]; then
             desired_suspended="true"
+            opposite_action="resume"
           else
             desired_suspended="false"
+            opposite_action="suspend"
           fi
 
-          if [ "$initial_suspended" = "$desired_suspended" ]; then
+          if [ "$initial_suspended" != "unknown" ] && [ "$initial_suspended" = "$desired_suspended" ]; then
             append_summary "Service is already in requested '$ACTION' state at start. Skipping apply and revert."
             exit 0
           fi
@@ -256,6 +292,14 @@ jobs:
           if [ "$apply_result" = "noop" ]; then
             append_summary "Apply call was a no-op. Skipping scheduled revert."
             exit 0
+          fi
+
+          if [ "$initial_suspended" = "unknown" ]; then
+            revert_action="$opposite_action"
+          elif [ "$initial_suspended" = "true" ]; then
+            revert_action="suspend"
+          else
+            revert_action="resume"
           fi
 
           now_epoch=$(date -u +%s)
@@ -268,17 +312,12 @@ jobs:
           fetch_service_state
           current_suspended="$LAST_SUSPENDED"
           current_status="$LAST_STATUS"
-          append_summary "State at window end: suspended=$current_suspended status=$current_status"
+          current_raw_suspended="$LAST_RAW_SUSPENDED"
+          append_summary "State at window end: suspended=$current_suspended status=$current_status raw_suspended=$current_raw_suspended"
 
-          if [ "$current_suspended" = "$initial_suspended" ]; then
+          if [ "$initial_suspended" != "unknown" ] && [ "$current_suspended" != "unknown" ] && [ "$current_suspended" = "$initial_suspended" ]; then
             append_summary "Service already returned to original state. Revert not needed."
             exit 0
-          fi
-
-          if [ "$initial_suspended" = "true" ]; then
-            revert_action="suspend"
-          else
-            revert_action="resume"
           fi
 
           trigger_action "$revert_action" "window end at $end_local"
