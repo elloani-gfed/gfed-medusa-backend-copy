@@ -4,17 +4,26 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: 'Action to apply to production service'
+        description: "Action to apply during the window"
         required: true
         type: choice
-        default: auto
+        default: suspend
         options:
-          - auto
           - suspend
           - resume
-  # schedule:
-  #   # Enforce policy every 30 minutes: :00-:29 resumed, :30-:59 suspended.
-  #   - cron: '*/30 * * * *'
+      start_datetime:
+        description: "Window start in local time (YYYY-MM-DD HH:MM)"
+        required: true
+        type: string
+      end_datetime:
+        description: "Window end in local time (YYYY-MM-DD HH:MM)"
+        required: true
+        type: string
+      timezone:
+        description: "IANA timezone, for example Asia/Singapore or America/Los_Angeles"
+        required: true
+        type: string
+        default: Asia/Singapore
 
 concurrency:
   group: render-prod-service-lifecycle
@@ -26,46 +35,15 @@ permissions:
 env:
   RENDER_API_BASE_URL: https://api.render.com/v1
   RENDER_PROD_SERVICE_NAME: gfed-medusa-backend-prod
-  RENDER_PROD_DATABASE_NAME: gfed-medusa-database
-  SCHEDULE_TIMEZONE: Asia/Singapore
+  MAX_RUN_SECONDS: "21000"
 
 jobs:
   manage:
-    name: Suspend/Resume Render prod service
+    name: Apply Render action in time window and auto-revert
     runs-on: ubuntu-latest
+    timeout-minutes: 360
     environment: production-ops
     steps:
-      - name: Determine desired action
-        id: desired-action
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          MANUAL_ACTION: ${{ github.event.inputs.action }}
-          TIMEZONE: ${{ env.SCHEDULE_TIMEZONE }}
-        run: |
-          set -euo pipefail
-
-          manual_action="${MANUAL_ACTION:-}"
-          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ -n "$manual_action" ] && [ "$manual_action" != "auto" ]; then
-            desired_action="$manual_action"
-            reason="manual trigger"
-          else
-            minute_of_hour=$(TZ="$TIMEZONE" date +%M)
-            minute_num=$((10#$minute_of_hour))
-            local_timestamp=$(TZ="$TIMEZONE" date '+%Y-%m-%d %H:%M:%S %Z')
-
-            if [ "$minute_num" -lt 30 ]; then
-              desired_action="resume"
-              reason="scheduled half-hour policy (:00-:29 resumed) at $local_timestamp"
-            else
-              desired_action="suspend"
-              reason="scheduled half-hour policy (:30-:59 suspended) at $local_timestamp"
-            fi
-          fi
-
-          echo "desired_action=$desired_action" >> "$GITHUB_OUTPUT"
-          echo "reason=$reason" >> "$GITHUB_OUTPUT"
-          echo "Action: $desired_action ($reason)" >> "$GITHUB_STEP_SUMMARY"
-
       - name: Resolve Render service ID
         id: resolve-service
         env:
@@ -90,7 +68,6 @@ jobs:
           fi
 
           service_id=$(echo "$list_body" | jq -r '.[0].service.id // .[0].id // empty')
-
           if [ -z "$service_id" ]; then
             echo "::error::Service not found: $SERVICE_NAME"
             exit 1
@@ -99,240 +76,210 @@ jobs:
           echo "service_id=$service_id" >> "$GITHUB_OUTPUT"
           echo "Service ID: $service_id" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Resolve Render Postgres ID
-        id: resolve-postgres
-        env:
-          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
-          POSTGRES_NAME: ${{ env.RENDER_PROD_DATABASE_NAME }}
-          BASE_URL: ${{ env.RENDER_API_BASE_URL }}
-        run: |
-          set -euo pipefail
-
-          list_resp=$(
-            curl -sS -w "\n%{http_code}" "$BASE_URL/postgres?name=$POSTGRES_NAME&limit=1" \
-              -H "Authorization: Bearer $RENDER_API_KEY" \
-              -H "Accept: application/json"
-          )
-
-          list_body=$(echo "$list_resp" | head -n -1)
-          list_status=$(echo "$list_resp" | tail -n 1)
-
-          if [ "$list_status" -ge 300 ]; then
-            echo "::error::Failed to query Postgres instances ($list_status): $list_body"
-            exit 1
-          fi
-
-          postgres_id=$(echo "$list_body" | jq -r '.[0].postgres.id // .[0].id // empty')
-
-          if [ -z "$postgres_id" ]; then
-            echo "::error::Postgres instance not found: $POSTGRES_NAME"
-            exit 1
-          fi
-
-          echo "postgres_id=$postgres_id" >> "$GITHUB_OUTPUT"
-          echo "Postgres ID: $postgres_id" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Skip if service is already in desired state
-        id: service-state-check
+      - name: Apply requested action at start and revert at end
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
           BASE_URL: ${{ env.RENDER_API_BASE_URL }}
           SERVICE_ID: ${{ steps.resolve-service.outputs.service_id }}
-          DESIRED_ACTION: ${{ steps.desired-action.outputs.desired_action }}
+          ACTION: ${{ github.event.inputs.action }}
+          START_DATETIME: ${{ github.event.inputs.start_datetime }}
+          END_DATETIME: ${{ github.event.inputs.end_datetime }}
+          TIMEZONE: ${{ github.event.inputs.timezone }}
+          MAX_RUN_SECONDS: ${{ env.MAX_RUN_SECONDS }}
         run: |
           set -euo pipefail
 
-          service_resp=$(
-            curl -sS -w "\n%{http_code}" "$BASE_URL/services/$SERVICE_ID" \
-              -H "Authorization: Bearer $RENDER_API_KEY" \
-              -H "Accept: application/json"
-          )
+          append_summary() {
+            echo "$1" >> "$GITHUB_STEP_SUMMARY"
+          }
 
-          service_body=$(echo "$service_resp" | head -n -1)
-          service_status=$(echo "$service_resp" | tail -n 1)
+          to_epoch() {
+            TZ="$TIMEZONE" date -d "$1" +%s 2>/dev/null || true
+          }
 
-          if [ "$service_status" -ge 300 ]; then
-            echo "::warning::Failed to inspect service state ($service_status): $service_body"
-            echo "should_call=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          detect_suspended_state() {
+            local body="$1"
+            local suspended status
 
-          is_suspended=$(echo "$service_body" | jq -r '.suspended // .service.suspended // .serviceDetails.suspended // .service.serviceDetails.suspended // "unknown"')
-          service_state=$(echo "$service_body" | jq -r '(.status // .service.status // .serviceDetails.status // .service.serviceDetails.status // "") | ascii_downcase')
+            suspended=$(echo "$body" | jq -r '.suspended // .service.suspended // .serviceDetails.suspended // .service.serviceDetails.suspended // "unknown"')
+            status=$(echo "$body" | jq -r '(.status // .service.status // .serviceDetails.status // .service.serviceDetails.status // "") | ascii_downcase')
 
-          if [ "$is_suspended" != "true" ] && [ "$is_suspended" != "false" ]; then
-            case "$service_state" in
-              suspended|suspending|deactivated|paused)
-                is_suspended="true"
-                ;;
-              live|running|active|ready|resuming)
-                is_suspended="false"
-                ;;
-              *)
-                is_suspended="unknown"
-                ;;
-            esac
-          fi
-
-          should_call="true"
-          if [ "$DESIRED_ACTION" = "suspend" ] && [ "$is_suspended" = "true" ]; then
-            should_call="false"
-          fi
-          if [ "$DESIRED_ACTION" = "resume" ] && [ "$is_suspended" = "false" ]; then
-            should_call="false"
-          fi
-
-          echo "should_call=$should_call" >> "$GITHUB_OUTPUT"
-
-          if [ "$should_call" = "false" ]; then
-            if [ "$DESIRED_ACTION" = "suspend" ]; then
-              echo "Service already suspended. Skipping suspend API call." >> "$GITHUB_STEP_SUMMARY"
-            else
-              echo "Service already running. Skipping resume API call." >> "$GITHUB_STEP_SUMMARY"
-            fi
-          else
-            echo "Service state check: suspended=$is_suspended status=$service_state" >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-      - name: Skip if Postgres is already in desired state
-        id: postgres-state-check
-        env:
-          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
-          BASE_URL: ${{ env.RENDER_API_BASE_URL }}
-          POSTGRES_ID: ${{ steps.resolve-postgres.outputs.postgres_id }}
-          DESIRED_ACTION: ${{ steps.desired-action.outputs.desired_action }}
-        run: |
-          set -euo pipefail
-
-          postgres_resp=$(
-            curl -sS -w "\n%{http_code}" "$BASE_URL/postgres/$POSTGRES_ID" \
-              -H "Authorization: Bearer $RENDER_API_KEY" \
-              -H "Accept: application/json"
-          )
-
-          postgres_body=$(echo "$postgres_resp" | head -n -1)
-          postgres_status=$(echo "$postgres_resp" | tail -n 1)
-
-          if [ "$postgres_status" -ge 300 ]; then
-            echo "::warning::Failed to inspect Postgres state ($postgres_status): $postgres_body"
-            echo "should_call=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          postgres_suspended=$(echo "$postgres_body" | jq -r '.suspended // .postgres.suspended // "unknown"')
-          postgres_runtime_status=$(echo "$postgres_body" | jq -r '(.status // .postgres.status // "") | ascii_downcase')
-
-          case "$postgres_suspended" in
-            suspended|true)
-              is_suspended="true"
-              ;;
-            not_suspended|false)
-              is_suspended="false"
-              ;;
-            *)
-              case "$postgres_runtime_status" in
+            if [ "$suspended" != "true" ] && [ "$suspended" != "false" ]; then
+              case "$status" in
                 suspended|suspending|deactivated|paused)
-                  is_suspended="true"
+                  suspended="true"
                   ;;
-                available|live|running|active|ready|resuming)
-                  is_suspended="false"
+                live|running|active|ready|resuming)
+                  suspended="false"
                   ;;
                 *)
-                  is_suspended="unknown"
+                  suspended="unknown"
                   ;;
               esac
-              ;;
-          esac
-
-          should_call="true"
-          if [ "$DESIRED_ACTION" = "suspend" ] && [ "$is_suspended" = "true" ]; then
-            should_call="false"
-          fi
-          if [ "$DESIRED_ACTION" = "resume" ] && [ "$is_suspended" = "false" ]; then
-            should_call="false"
-          fi
-
-          echo "should_call=$should_call" >> "$GITHUB_OUTPUT"
-
-          if [ "$should_call" = "false" ]; then
-            if [ "$DESIRED_ACTION" = "suspend" ]; then
-              echo "Postgres already suspended. Skipping suspend API call." >> "$GITHUB_STEP_SUMMARY"
-            else
-              echo "Postgres already running. Skipping resume API call." >> "$GITHUB_STEP_SUMMARY"
             fi
+
+            echo "$suspended|$status"
+          }
+
+          fetch_service_state() {
+            local resp body http_status state_pair
+
+            resp=$(
+              curl -sS -w "\n%{http_code}" "$BASE_URL/services/$SERVICE_ID" \
+                -H "Authorization: Bearer $RENDER_API_KEY" \
+                -H "Accept: application/json"
+            )
+
+            body=$(echo "$resp" | head -n -1)
+            http_status=$(echo "$resp" | tail -n 1)
+
+            if [ "$http_status" -ge 300 ]; then
+              echo "::error::Failed to inspect service state ($http_status): $body"
+              return 1
+            fi
+
+            state_pair=$(detect_suspended_state "$body")
+            LAST_SUSPENDED="${state_pair%%|*}"
+            LAST_STATUS="${state_pair#*|}"
+
+            if [ "$LAST_SUSPENDED" = "unknown" ]; then
+              echo "::error::Unable to safely determine service state. Raw status: '$LAST_STATUS'."
+              return 1
+            fi
+          }
+
+          trigger_action() {
+            local requested_action="$1"
+            local reason="$2"
+            local action_resp action_body action_status action_message
+
+            ACTION_RESULT="applied"
+            action_resp=$(
+              curl -sS -w "\n%{http_code}" -X POST "$BASE_URL/services/$SERVICE_ID/$requested_action" \
+                -H "Authorization: Bearer $RENDER_API_KEY" \
+                -H "Accept: application/json"
+            )
+
+            action_body=$(echo "$action_resp" | head -n -1)
+            action_status=$(echo "$action_resp" | tail -n 1)
+
+            if [ "$action_status" -ge 300 ]; then
+              action_message=$(echo "$action_body" | jq -r '(.message // .error // .error.message // .details // empty) | tostring | ascii_downcase')
+              if echo "$action_message" | grep -q "already"; then
+                ACTION_RESULT="noop"
+                echo "::notice::Render reports service is already in the requested state."
+                append_summary "Render replied the service is already in the requested state for '$requested_action'."
+                return 0
+              fi
+              if [ "$requested_action" = "resume" ] && echo "$action_message" | grep -q "only services suspended by a user can be resumed"; then
+                ACTION_RESULT="noop"
+                echo "::notice::Render reports service is not user-suspended; resume treated as a no-op."
+                append_summary "Render replied service is not user-suspended; resume treated as no-op."
+                return 0
+              fi
+
+              echo "::error::Failed to $requested_action service ($action_status): $action_body"
+              return 1
+            fi
+
+            append_summary "Requested '$requested_action' for service $SERVICE_ID ($reason)."
+          }
+
+          if [ "$ACTION" != "suspend" ] && [ "$ACTION" != "resume" ]; then
+            echo "::error::Invalid action '$ACTION'. Allowed values: suspend, resume."
+            exit 1
+          fi
+
+          if [ ! -f "/usr/share/zoneinfo/$TIMEZONE" ]; then
+            echo "::error::Invalid timezone '$TIMEZONE'. Use an IANA timezone (for example Asia/Singapore)."
+            exit 1
+          fi
+
+          start_epoch=$(to_epoch "$START_DATETIME")
+          end_epoch=$(to_epoch "$END_DATETIME")
+          if [ -z "$start_epoch" ]; then
+            echo "::error::Invalid start_datetime '$START_DATETIME'. Use YYYY-MM-DD HH:MM."
+            exit 1
+          fi
+          if [ -z "$end_epoch" ]; then
+            echo "::error::Invalid end_datetime '$END_DATETIME'. Use YYYY-MM-DD HH:MM."
+            exit 1
+          fi
+          if [ "$end_epoch" -le "$start_epoch" ]; then
+            echo "::error::end_datetime must be after start_datetime."
+            exit 1
+          fi
+
+          now_epoch=$(date -u +%s)
+          if [ "$now_epoch" -ge "$end_epoch" ]; then
+            echo "::error::The end time is already in the past."
+            exit 1
+          fi
+
+          total_runtime_seconds=$((end_epoch - now_epoch))
+          if [ "$total_runtime_seconds" -gt "$MAX_RUN_SECONDS" ]; then
+            echo "::error::Requested window exceeds safe GitHub Actions runtime. Maximum supported from now is $MAX_RUN_SECONDS seconds."
+            echo "::error::Run this workflow closer to the start time or use a shorter window."
+            exit 1
+          fi
+
+          start_local=$(TZ="$TIMEZONE" date -d "@$start_epoch" '+%Y-%m-%d %H:%M:%S %Z')
+          end_local=$(TZ="$TIMEZONE" date -d "@$end_epoch" '+%Y-%m-%d %H:%M:%S %Z')
+          append_summary "Requested window: $start_local -> $end_local ($TIMEZONE), action=$ACTION"
+
+          if [ "$now_epoch" -lt "$start_epoch" ]; then
+            wait_to_start=$((start_epoch - now_epoch))
+            append_summary "Waiting ${wait_to_start}s until window start."
+            sleep "$wait_to_start"
           else
-            echo "Postgres state check: suspended=$is_suspended status=$postgres_runtime_status" >> "$GITHUB_STEP_SUMMARY"
+            append_summary "Start time already passed; applying action immediately."
           fi
 
-      - name: Trigger Render suspend/resume action
-        if: steps.service-state-check.outputs.should_call == 'true'
-        env:
-          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
-          BASE_URL: ${{ env.RENDER_API_BASE_URL }}
-          SERVICE_ID: ${{ steps.resolve-service.outputs.service_id }}
-          ACTION: ${{ steps.desired-action.outputs.desired_action }}
-          REASON: ${{ steps.desired-action.outputs.reason }}
-        run: |
-          set -euo pipefail
+          fetch_service_state
+          initial_suspended="$LAST_SUSPENDED"
+          initial_status="$LAST_STATUS"
+          append_summary "State at window start: suspended=$initial_suspended status=$initial_status"
 
-          action_resp=$(
-            curl -sS -w "\n%{http_code}" -X POST "$BASE_URL/services/$SERVICE_ID/$ACTION" \
-              -H "Authorization: Bearer $RENDER_API_KEY" \
-              -H "Accept: application/json"
-          )
-
-          action_body=$(echo "$action_resp" | head -n -1)
-          action_status=$(echo "$action_resp" | tail -n 1)
-
-          if [ "$action_status" -ge 300 ]; then
-            action_message=$(echo "$action_body" | jq -r '(.message // .error // .error.message // .details // empty) | tostring | ascii_downcase')
-            if echo "$action_message" | grep -q "already"; then
-              echo "::notice::Render reports service is already in the requested state."
-              echo "Render replied that service is already in the requested state." >> "$GITHUB_STEP_SUMMARY"
-              exit 0
-            fi
-            if [ "$ACTION" = "resume" ] && echo "$action_message" | grep -q "only services suspended by a user can be resumed"; then
-              echo "::notice::Render reports service is not user-suspended; resume API call is a no-op."
-              echo "Render replied that the service is not user-suspended; treating resume as a no-op." >> "$GITHUB_STEP_SUMMARY"
-              exit 0
-            fi
-
-            echo "::error::Failed to $ACTION service ($action_status): $action_body"
-            exit 1
+          if [ "$ACTION" = "suspend" ]; then
+            desired_suspended="true"
+          else
+            desired_suspended="false"
           fi
 
-          echo "Successfully requested '$ACTION' for service $SERVICE_ID ($REASON)." >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Trigger Render Postgres suspend/resume action
-        if: steps.postgres-state-check.outputs.should_call == 'true'
-        env:
-          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
-          BASE_URL: ${{ env.RENDER_API_BASE_URL }}
-          POSTGRES_ID: ${{ steps.resolve-postgres.outputs.postgres_id }}
-          ACTION: ${{ steps.desired-action.outputs.desired_action }}
-          REASON: ${{ steps.desired-action.outputs.reason }}
-        run: |
-          set -euo pipefail
-
-          action_resp=$(
-            curl -sS -w "\n%{http_code}" -X POST "$BASE_URL/postgres/$POSTGRES_ID/$ACTION" \
-              -H "Authorization: Bearer $RENDER_API_KEY" \
-              -H "Accept: application/json"
-          )
-
-          action_body=$(echo "$action_resp" | head -n -1)
-          action_status=$(echo "$action_resp" | tail -n 1)
-
-          if [ "$action_status" -ge 300 ]; then
-            action_message=$(echo "$action_body" | jq -r '(.message // .error // .error.message // .details // empty) | tostring | ascii_downcase')
-            if echo "$action_message" | grep -Eq "already|not suspended|not_suspended"; then
-              echo "::notice::Render Postgres reports database is already in the requested state."
-              echo "Render Postgres replied that database is already in the requested state." >> "$GITHUB_STEP_SUMMARY"
-              exit 0
-            fi
-
-            echo "::error::Failed to $ACTION Postgres instance ($action_status): $action_body"
-            exit 1
+          if [ "$initial_suspended" = "$desired_suspended" ]; then
+            append_summary "Service is already in requested '$ACTION' state at start. Skipping apply and revert."
+            exit 0
           fi
 
-          echo "Successfully requested '$ACTION' for Postgres $POSTGRES_ID ($REASON)." >> "$GITHUB_STEP_SUMMARY"
+          trigger_action "$ACTION" "window start at $start_local"
+          apply_result="$ACTION_RESULT"
+          if [ "$apply_result" = "noop" ]; then
+            append_summary "Apply call was a no-op. Skipping scheduled revert."
+            exit 0
+          fi
+
+          now_epoch=$(date -u +%s)
+          if [ "$now_epoch" -lt "$end_epoch" ]; then
+            wait_to_end=$((end_epoch - now_epoch))
+            append_summary "Window active. Waiting ${wait_to_end}s until window end."
+            sleep "$wait_to_end"
+          fi
+
+          fetch_service_state
+          current_suspended="$LAST_SUSPENDED"
+          current_status="$LAST_STATUS"
+          append_summary "State at window end: suspended=$current_suspended status=$current_status"
+
+          if [ "$current_suspended" = "$initial_suspended" ]; then
+            append_summary "Service already returned to original state. Revert not needed."
+            exit 0
+          fi
+
+          if [ "$initial_suspended" = "true" ]; then
+            revert_action="suspend"
+          else
+            revert_action="resume"
+          fi
+
+          trigger_action "$revert_action" "window end at $end_local"
+          append_summary "Auto-revert completed with action '$revert_action'."
