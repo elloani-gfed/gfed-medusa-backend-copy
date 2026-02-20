@@ -13,6 +13,16 @@ projects:
               url: ghcr.io/elloani-gfed/gfed-medusa-backend-copy/medusa:3a26ede91980bed6aec36be89979313ad1583dea
             envVars:
               - fromGroup: backend-env-group-prod
+        databases:
+          - name: gfed-medusa-database
+            databaseName: gfed_medusa_database_wgqd
+            user: gfed_medusa_database_wgqd_user
+            plan: free
+            region: singapore
+            ipAllowList:
+            - source: 0.0.0.0/0
+              description: everywhere
+      postgresMajorVersion: "18"
       - name: qa
         services:
           - type: web
