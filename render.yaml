@@ -19,10 +19,10 @@ projects:
             user: gfed_medusa_database_wgqd_user
             plan: free
             region: singapore
+            postgresMajorVersion: "18"
             ipAllowList:
-            - source: 0.0.0.0/0
-              description: everywhere
-      postgresMajorVersion: "18"
+              - source: 0.0.0.0/0
+                description: everywhere
       - name: qa
         services:
           - type: web
