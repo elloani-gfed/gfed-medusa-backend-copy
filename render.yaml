@@ -10,7 +10,7 @@ projects:
             region: singapore
             autoDeployTrigger: off
             image:
-              url: ghcr.io/elloani-gfed/gfed-medusa-backend-copy/medusa:3a26ede91980bed6aec36be89979313ad1583dea
+              url: ghcr.io/elloani-gfed/gfed-medusa-backend-copy/medusa:latest
             envVars:
               - fromGroup: backend-env-group-prod
         databases:
@@ -19,7 +19,7 @@ projects:
             user: gfed_medusa_database_wgqd_user
             plan: free
             region: singapore
-            postgresMajorVersion: "18"
+            postgresMajorVersion: '18'
             ipAllowList:
               - source: 0.0.0.0/0
                 description: everywhere
@@ -32,6 +32,6 @@ projects:
             region: singapore
             autoDeployTrigger: off
             image:
-              url: ghcr.io/elloani-gfed/gfed-medusa-backend-copy/medusa:3a26ede91980bed6aec36be89979313ad1583dea
+              url: ghcr.io/elloani-gfed/gfed-medusa-backend-copy/medusa:latest
             envVars:
               - fromGroup: backend-env-group-qa
